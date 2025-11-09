@@ -1,0 +1,38 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background pattern - light beige curves -->
+  <defs>
+    <pattern id="pattern" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+      <path d="M 20 40 Q 30 20, 40 40 T 60 40" stroke="#F5E6D3" stroke-width="8" fill="none" stroke-linecap="round"/>
+      <path d="M 10 10 Q 15 5, 20 10 T 30 10" stroke="#F5E6D3" stroke-width="6" fill="none" stroke-linecap="round"/>
+      <path d="M 50 70 Q 55 65, 60 70 T 70 70" stroke="#F5E6D3" stroke-width="6" fill="none" stroke-linecap="round"/>
+    </pattern>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="512" height="512" fill="#FFFEF8"/>
+  <rect width="512" height="512" fill="url(#pattern)"/>
+  
+  <!-- Sun icon -->
+  <g transform="translate(256, 100)">
+    <!-- Sun circle -->
+    <circle cx="0" cy="0" r="30" fill="#F4D03F"/>
+    <!-- Sun rays -->
+    <line x1="0" y1="-50" x2="0" y2="-70" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="35" y1="-35" x2="50" y2="-50" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="50" y1="0" x2="70" y2="0" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="35" y1="35" x2="50" y2="50" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="0" y1="50" x2="0" y2="70" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="-35" y1="35" x2="-50" y2="50" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="-50" y1="0" x2="-70" y2="0" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <line x1="-35" y1="-35" x2="-50" y2="-50" stroke="#F4D03F" stroke-width="8" stroke-linecap="round"/>
+    <!-- Small arc above sun -->
+    <path d="M -20 -50 Q 0 -65, 20 -50" stroke="#F4D03F" stroke-width="6" fill="none" stroke-linecap="round"/>
+  </g>
+  
+  <!-- AVIV Text -->
+  <text x="256" y="320" font-family="Arial, sans-serif" font-size="140" font-weight="900" text-anchor="middle" fill="#000080" letter-spacing="10">AVIV</text>
+  
+  <!-- Registered trademark -->
+  <circle cx="470" cy="250" r="18" stroke="#000080" stroke-width="3" fill="none"/>
+  <text x="470" y="257" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#000080">R</text>
+</svg>

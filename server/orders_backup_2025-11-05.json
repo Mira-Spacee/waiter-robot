@@ -1,0 +1,27 @@
+[
+  {
+    "id": "1762363189133",
+    "tableNumber": 2,
+    "items": [
+      {
+        "id": "1",
+        "name": "Classic Burger",
+        "price": 12.99,
+        "image": "/src/assets/burger.jpg",
+        "category": "meals",
+        "quantity": 1
+      },
+      {
+        "id": "6",
+        "name": "Mineral Water",
+        "price": 2.99,
+        "image": "/src/assets/water.jpg",
+        "category": "drinks",
+        "quantity": 1
+      }
+    ],
+    "total": 15.98,
+    "timestamp": "2025-11-05T17:19:49.133Z",
+    "status": "sent"
+  }
+]
