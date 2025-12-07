@@ -1,6 +1,15 @@
 """
 MODULE 3 Table Navigation Simulator
-Python version that matches the ESP32 greedy algorithm exactly
+Python version that matches the ESP32 algorithm exactly
+
+ALGORITHM:
+- Single Order: Tables 1-5 → FORWARD, Tables 6-10 → BACKWARD
+- Multiple Orders: Directional Grouping + 5F/4B rule
+  Step 1: Detect multi-order (>1 order)
+  Step 2: Count RIGHT (1-5) vs LEFT (6-10), start with MORE (tie=LEFT)
+  Step 3: Serve all tables in that range opportunistically
+  Step 4: Use 5F/4B rule for remaining tables
+  Step 5: Return based on last table (1-5→BWD, 6-10→FWD)
 """
 
 import time
@@ -35,13 +44,13 @@ current_position = 0  # Current position (0=staff, 1-10=tables)
 target_table = 0      # Current target table
 cumulative_counter = 0  # Cumulative IR5 count (always increments)
 
-# ============================================== GREEDY ALGORITHM /////////////////
+# ============================================== DIRECTION DECISION ALGORITHM /////////////////
 
 def decide_direction():
     """
-    Decide direction based on reachability + opportunistic serving
-    FORWARD: +5 tables reach
-    BACKWARD: +4 tables reach (with wrapping)
+    Decide initial direction based on:
+    - Single order: Tables 1-5 → FORWARD, Tables 6-10 → BACKWARD
+    - Multiple orders: Count RIGHT(1-5) vs LEFT(6-10), start with MORE (tie=LEFT)
     Returns: (is_forward, target_table, calc_time_us)
     """
     global current_position
@@ -53,59 +62,131 @@ def decide_direction():
     if not unserved:
         return None, -1, 0
     
-    forward_reachable = []
-    backward_reachable = []
+    # ==== SINGLE ORDER RULE ====
+    if len(unserved) == 1:
+        table = unserved[0]
+        if 1 <= table <= 5:
+            # RIGHT side (1-5) → FORWARD
+            is_forward = True
+            target = table
+            print("📍 Single order: Table 1-5 → FORWARD (RIGHT side)")
+        else:
+            # LEFT side (6-10) → BACKWARD
+            is_forward = False
+            target = table
+            print("📍 Single order: Table 6-10 → BACKWARD (LEFT side)")
+        
+        calc_time = (time.perf_counter() - start_time) * 1000000
+        return is_forward, target, calc_time
     
-    # Check FORWARD reachability (current+1 to current+5)
-    for table in unserved:
-        if table > current_position and table <= current_position + 5:
-            forward_reachable.append(table)
+    # ==== MULTIPLE ORDER RULE ====
+    # Step 2: Count RIGHT (1-5) vs LEFT (6-10)
+    right_tables = [t for t in unserved if 1 <= t <= 5]
+    left_tables = [t for t in unserved if 6 <= t <= 10]
     
-    # Check BACKWARD reachability (4 steps back with wrapping)
+    right_count = len(right_tables)
+    left_count = len(left_tables)
+    
+    print(f"📊 RIGHT (1-5): {right_count} orders, LEFT (6-10): {left_count} orders")
+    
+    # Choose side with MORE orders (tie = LEFT)
+    if right_count > left_count:
+        is_forward = True
+        target = max(right_tables)  # Farthest in forward direction
+        print("📍 Multi-order: RIGHT has more → FORWARD first")
+    elif left_count > right_count:
+        is_forward = False
+        target = min(left_tables)  # Farthest in backward direction (closest to T10)
+        print("📍 Multi-order: LEFT has more → BACKWARD first")
+    else:
+        # Equal: default to LEFT (backward)
+        if left_tables:
+            is_forward = False
+            target = min(left_tables)
+            print("📍 Multi-order: EQUAL → Default BACKWARD (LEFT)")
+        else:
+            is_forward = True
+            target = max(right_tables)
+            print("📍 Multi-order: No LEFT orders → FORWARD")
+    
+    calc_time = (time.perf_counter() - start_time) * 1000000
+    return is_forward, target, calc_time
+
+
+def decide_next_direction():
+    """
+    5F/4B Rule: For remaining tables after first side
+    - Forward can reach +5 tables
+    - Backward can reach +4 tables
+    Returns: (is_forward, target_table, calc_time_us)
+    """
+    global current_position
+    
+    start_time = time.perf_counter()
+    
+    unserved = [t for t in order_list if not order_served[t]]
+    
+    if not unserved:
+        return None, -1, 0
+    
+    # Single remaining → use simple rule
+    if len(unserved) == 1:
+        table = unserved[0]
+        is_forward = 1 <= table <= 5
+        calc_time = (time.perf_counter() - start_time) * 1000000
+        return is_forward, table, calc_time
+    
+    # 5F/4B Rule: Calculate steps to each unserved table
+    best_forward_table = -1
+    best_forward_steps = 999
+    best_backward_table = -1
+    best_backward_steps = 999
+    
     for table in unserved:
-        # Calculate backward distance with wrapping
+        # Forward steps (max 5)
+        if table > current_position:
+            forward_steps = table - current_position
+        else:
+            forward_steps = (10 - current_position) + table  # Wrap around
+        
+        # Backward steps (max 4)
         if table < current_position:
             backward_steps = current_position - table
         else:
-            # Wrapping: current→...→1→10→9→...→table
-            backward_steps = current_position + (10 - table)
+            backward_steps = current_position + (10 - table)  # Wrap around
         
-        if backward_steps > 0 and backward_steps <= 4:
-            backward_reachable.append(table)
+        # Check if within reachability
+        if forward_steps <= 5 and forward_steps < best_forward_steps:
+            best_forward_steps = forward_steps
+            best_forward_table = table
+        
+        if backward_steps <= 4 and backward_steps < best_backward_steps:
+            best_backward_steps = backward_steps
+            best_backward_table = table
     
-    # Choose direction with more reachable tables
-    if len(forward_reachable) > len(backward_reachable):
-        target = max(forward_reachable)  # Farthest forward
-        is_forward = True
-    elif len(backward_reachable) > len(forward_reachable):
-        # Farthest backward = the one with most steps
-        farthest = backward_reachable[0]
-        max_steps = current_position - farthest if farthest < current_position else current_position + (10 - farthest)
-        for table in backward_reachable[1:]:
-            steps = current_position - table if table < current_position else current_position + (10 - table)
-            if steps > max_steps:
-                max_steps = steps
-                farthest = table
-        target = farthest
+    print(f"📊 5F/4B from T{current_position}: Fwd→T{best_forward_table}({best_forward_steps} steps), Bwd→T{best_backward_table}({best_backward_steps} steps)")
+    
+    # Choose direction: prefer shorter path, then backward
+    if best_backward_table != -1 and (best_forward_table == -1 or best_backward_steps <= best_forward_steps):
         is_forward = False
-    elif len(forward_reachable) > 0:
-        # Equal: prefer forward
-        target = max(forward_reachable)
+        target = best_backward_table
+    elif best_forward_table != -1:
         is_forward = True
+        target = best_forward_table
     else:
-        # No reachable (shouldn't happen)
-        target = current_position + 1
-        is_forward = True
+        # Fallback: use simple rule
+        table = unserved[0]
+        is_forward = 1 <= table <= 5
+        target = table
     
-    calc_time = (time.perf_counter() - start_time) * 1000000  # microseconds
-    
+    calc_time = (time.perf_counter() - start_time) * 1000000
     return is_forward, target, calc_time
 
 # ============================================== SIMULATION /////////////////
 
 def simulate_navigation():
     """
-    Simulate range-based F/B navigation with opportunistic serving
+    Simulate Directional Grouping + 5F/4B navigation with opportunistic serving
     """
     global current_position, served_count, order_served
     
@@ -114,10 +195,11 @@ def simulate_navigation():
         return
     
     print("\n" + "=" * 60)
-    print("🚀 STARTING REACHABILITY-BASED NAVIGATION")
+    print("🚀 STARTING DIRECTIONAL GROUPING + 5F/4B NAVIGATION")
     print("=" * 60)
-    print("Strategy: Forward +5 reach vs Backward +4 reach (wrap),")
-    print("          choose direction with more tables, serve opportunistically!")
+    print("Strategy:")
+    print("  SINGLE: Tables 1-5 → FORWARD, Tables 6-10 → BACKWARD")
+    print("  MULTI: Count sides, start with MORE, then use 5F/4B rule")
     print("=" * 60)
     
     # Reset state
@@ -126,6 +208,7 @@ def simulate_navigation():
     order_served = [False] * 11
     total_markers = 0
     cumulative_counter = 0
+    is_first_decision = True
     
     # Save original order list (since we'll remove items during serving)
     original_order_count = len(order_list)
@@ -135,13 +218,14 @@ def simulate_navigation():
     
     start_time = time.perf_counter()
     
-    # Save original order count (since we'll remove items during serving)
-    original_order_count = len(order_list)
-    
     # Main navigation loop
     while len(order_list) > 0:
-        # Reachability decision
-        is_forward, target_table, calc_time = decide_direction()
+        # Direction decision
+        if is_first_decision:
+            is_forward, target_table, calc_time = decide_direction()
+        else:
+            # Step 4: Use 5F/4B rule for remaining
+            is_forward, target_table, calc_time = decide_next_direction()
         
         if target_table == -1:
             break  # All served
@@ -153,7 +237,7 @@ def simulate_navigation():
         
         # Determine direction
         moving_forward = is_forward
-        direction = "FORWARD (+5 reach)" if moving_forward else "BACKWARD (+4 reach, wrap)"
+        direction = "FORWARD (RIGHT side)" if moving_forward else "BACKWARD (LEFT side)"
         print(f"📍 Direction: {direction} from T{current_position}")
         print()
         
@@ -194,6 +278,10 @@ def simulate_navigation():
                     
                     print(f"\n✔️  Order served! Progress: {served_count} served, {len(order_list)} remaining")
                     print()
+        
+            # Mark first decision as complete after forward movement
+            is_first_decision = False
+        
         else:
             # BACKWARD with wrapping: 0→10→9→8→7 or 5→4→3→2→1→10→9
             path = []
@@ -249,24 +337,23 @@ def simulate_navigation():
                     
                     print(f"\n✔️  Order served! Progress: {served_count} served, {len(order_list)} remaining")
                     print()
+            
+            # Mark first decision as complete after backward movement
+            is_first_decision = False
     
-    # Smart return to staff: calculate optimal direction
+    # ==== STEP 5: Return based on last table position ====
     print(f"\n🎉 All orders served!")
     
-    # Calculate steps needed in each direction
-    forward_steps = (10 - current_position) + 1  # To T10, then wrap to Staff
-    backward_steps = current_position  # Direct path back
-    
-    if forward_steps <= backward_steps:
-        print(f"🔙 Returning FORWARD (needs {forward_steps} steps)")
-        moving_forward = True
-        # Continue incrementing
-    else:
-        print(f"🔙 Returning BACKWARD (needs {backward_steps} steps)")
+    if 1 <= current_position <= 5:
+        # Last table in RIGHT side (1-5) → return BACKWARD
+        print(f"🔙 Last table T{current_position} is RIGHT (1-5) → Returning BACKWARD")
         moving_forward = False
-        cumulative_counter = 10 + current_position
+    else:
+        # Last table in LEFT side (6-10) → return FORWARD
+        print(f"🔙 Last table T{current_position} is LEFT (6-10) → Returning FORWARD")
+        moving_forward = True
     
-    # Simulate return journey with counting
+    # Simulate return journey
     if moving_forward:
         # Forward to staff: current→...10→0
         path = list(range(current_position + 1, 11)) + [0]
@@ -305,8 +392,6 @@ def simulate_navigation():
     
     calc_time = (time.perf_counter() - start_time) * 1000
     
-    calc_time = (time.perf_counter() - start_time) * 1000
-    
     print("\n" + "=" * 60)
     print("🏁 SIMULATION COMPLETE")
     print("=" * 60)
@@ -322,22 +407,21 @@ def print_header():
     """Print welcome header"""
     print("\n" + "=" * 60)
     print("   MODULE 3 TABLE NAVIGATION SIMULATOR (Python)")
+    print("   Directional Grouping + 5F/4B Algorithm")
     print("=" * 60)
     print()
     print("🗺️  Restaurant Layout:")
-    print("   Staff (IR1) → T1 → T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10")
-    print("   IR5 counts tables | IR1 detects staff station only")
+    print("   Staff ←→ T1 → T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 ←→ Staff")
+    print("   RIGHT side (1-5): FORWARD | LEFT side (6-10): BACKWARD")
     print()
-    print("📋 Distance Matrix:")
-    print("   - T1, T2 are FARTHEST (19-20 markers from staff)")
-    print("   - T8, T9, T10 are CLOSEST (8-10 markers from staff)")
-    print()
-    print("🤖 Algorithm: Reachability + Opportunistic (same as ESP32 MODULE 3)")
-    print("   1. Check reachable tables from current position:")
-    print("      FORWARD: +5 tables (current+1 to current+5)")
-    print("      BACKWARD: +4 tables with wrap (1→10→9...)")
-    print("   2. Choose direction with MORE reachable tables")
-    print("   3. Go to farthest reachable, serve opportunistically!")
+    print("📋 Navigation Algorithm:")
+    print("   SINGLE ORDER: Tables 1-5 → FORWARD, Tables 6-10 → BACKWARD")
+    print("   MULTIPLE ORDERS:")
+    print("     Step 1: Detect multi-order (>1 order)")
+    print("     Step 2: Count RIGHT(1-5) vs LEFT(6-10), start with MORE (tie=LEFT)")
+    print("     Step 3: Serve all tables in that range opportunistically")
+    print("     Step 4: Use 5F/4B rule for remaining tables")
+    print("     Step 5: Return based on last table (1-5→BWD, 6-10→FWD)")
     print()
 
 def print_menu():
@@ -413,29 +497,31 @@ def show_test_scenarios():
     print("TEST SCENARIOS (copy and paste these):")
     print("=" * 60)
     print()
-    print("1. Best Case (closest tables):")
-    print("   add 10,9,8")
-    print("   Expected: Staff → T10 → T9 → T8 → Staff (12 markers)")
+    print("1. Single Order - RIGHT side (FORWARD):")
+    print("   add 3")
+    print("   Expected: Staff → FORWARD → T3 → BACKWARD → Staff")
     print()
-    print("2. Worst Case (farthest tables):")
-    print("   add 1,2,3")
-    print("   Expected: Staff → T3 → T2 → T1 → Staff (27 markers)")
+    print("2. Single Order - LEFT side (BACKWARD):")
+    print("   add 8")
+    print("   Expected: Staff → BACKWARD → T8 → FORWARD → Staff")
     print()
-    print("3. Mixed Distance:")
-    print("   add 1,10,7")
-    print("   Expected: Staff → T10 → T7 → T1 → Staff (40 markers)")
+    print("3. Multi-Order - More on RIGHT (example from user):")
+    print("   add 1,2,3,9,8")
+    print("   Expected: RIGHT(3) > LEFT(2) → FORWARD first")
+    print("   Staff → T1 → T2 → T3 → [5F/4B] → T9 → T8 → FORWARD → Staff")
     print()
-    print("4. Greedy Optimization Demo:")
-    print("   add 1,10,5")
-    print("   Expected: Staff → T10 → T5 → T1 → Staff (38 markers)")
+    print("4. Multi-Order - More on LEFT:")
+    print("   add 1,7,8,9,10")
+    print("   Expected: LEFT(4) > RIGHT(1) → BACKWARD first")
+    print("   Staff → T10 → T9 → T8 → T7 → [5F/4B] → T1 → BACKWARD → Staff")
     print()
-    print("5. Random Order:")
-    print("   add 3,8,1,6,10")
-    print("   Greedy will find optimal path!")
+    print("5. Multi-Order - Equal (default to LEFT):")
+    print("   add 1,2,9,10")
+    print("   Expected: LEFT(2) = RIGHT(2) → BACKWARD (default LEFT)")
     print()
     print("6. All Tables:")
     print("   add 1,2,3,4,5,6,7,8,9,10")
-    print("   Watch greedy algorithm optimize the full route!")
+    print("   Watch algorithm handle all tables!")
     print("=" * 60)
     print()
 

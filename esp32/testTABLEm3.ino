@@ -2,6 +2,11 @@
  * testTABLEm3: Table Navigation Testing Module
  * 
  * Same as MODULE 3 with manual order testing capability
+ * Uses MODULE 1B backward line following with BACK SENSORS
+ * 
+ * ALGORITHM:
+ * - Single Order: Tables 1-5 → FORWARD, Tables 6-10 → BACKWARD
+ * - Multiple Orders: Directional Grouping + 5F/4B rule
  * 
  * TO ADD TEST ORDERS: Edit the setup() function below
  * Example:
@@ -15,12 +20,17 @@
 
 // ============================================== PIN DEFINITIONS /////////////////
 
-// IR Sensor Pins (Digital)
-const int IR1 = 36;  // Staff station detector (Far Left)
+// IR Sensor Pins (Digital) - ACTIVE LOW (LOW = black line detected)
+const int IR1 = 36;  // Staff station detector (Far Left) - DIRECTLY on line
 const int IR2 = 33;  // Left line follower
 const int IR3 = 35;  // Middle line follower (main)
 const int IR4 = 32;  // Right line follower
-const int IR5 = 39;  // Table counter (Far Right)
+const int IR5 = 39;  // Table counter (Far Right) - DIRECTLY on line
+
+// BACK IR Sensors for backward movement (MODULE 1B)
+const int BACK_IR_LEFT = 27;    // Back left sensor
+const int BACK_IR_CENTER = 26;  // Back center sensor
+const int BACK_IR_RIGHT = 25;   // Back right sensor
 
 // L298N Motor Driver Pins (ESP32 GPIO)
 const int LEFT_IN1 = 15;   // Left motor direction 1
@@ -43,9 +53,14 @@ const float KP = 45;               // ✅ Lower for 4cm line (was 55)
 const float KI = 0;                // Keep at 0
 const float KD = 30;               // ✅ Lower for smoother response
 
-const int SENSORS_COUNT = 3;  // 3 IR sensors for line following
+// Backward PID (lower to reduce zigzag)
+const float KP_BACK = 45;          // ✅ Reduced from 45 for smoother backward
+const float KD_BACK = 30;          // ✅ Reduced from 30
+
+const int SENSORS_COUNT = 3;
 const int SENSOR_PINS[SENSORS_COUNT] = {33, 35, 32};  // {Left, Middle, Right}
-const int ERRORS[2] = {0, 1};  // Only 2 error levels for 3 sensors
+const int BACK_SENSOR_PINS[SENSORS_COUNT] = {27, 26, 25};  // {Left, Center, Right} for backward
+const int ERRORS[2] = {0, 1};
 
 const int MAX_SPEED = 255;
 const int MIN_SPEED = 0;
@@ -254,13 +269,19 @@ class Motors {
     }
     
     void drive_backward(int speed_difference, bool debug) {
-        // Backward movement: negate speeds AND reverse PID correction
-        // When going backward, left/right steering is reversed
-        int left_speed = -(normal_speed - speed_difference);   // Swap the correction
-        int right_speed = -(normal_speed + speed_difference);  // Swap the correction
+        // ✅ MODULE1B: BACKWARD MOVEMENT - same formula as MODULE1B
+        int left_speed = -(normal_speed + speed_difference);   // Negative = backward
+        int right_speed = -(normal_speed - speed_difference);  // Negative = backward
 
-        set_motor(left_in1, left_in2, left_en, left_speed, true);   // true = left motor
-        set_motor(right_in1, right_in2, right_en, right_speed, false); // false = right motor
+        // ✅ Force backward direction directly (don't rely on get_direction)
+        // Backward: LEFT(HIGH-LOW), RIGHT(LOW-HIGH)
+        digitalWrite(left_in1, HIGH);
+        digitalWrite(left_in2, LOW);
+        analogWrite(left_en, normalize_speed(left_speed));
+        
+        digitalWrite(right_in1, LOW);
+        digitalWrite(right_in2, HIGH);
+        analogWrite(right_en, normalize_speed(right_speed));
 
         if(debug) {
             Serial.print("BACKWARD - left_speed: ");
@@ -307,31 +328,36 @@ bool orderServed[11];           // Track which tables have been served (0=staff,
 int orderCount = 0;             // Number of orders in list
 int servedCount = 0;            // Number of orders served
 int targetTable = 0;            // Current target table (farthest unserved)
+bool initialSideChosen = false; // Track if initial side decision has been made
+bool servingRightSide = true;   // Track which side we're currently serving
 
 // Timing
 unsigned long tableStopStartTime = 0;
+unsigned long departureTime = 0;  // Time when robot departed from table (for IR5 ignore)
 
 // MPU9250 object
 MPU9250 mpu;
 
 // PID, Sensors, Motors objects
 Sensors sensors(SENSORS_COUNT, SENSOR_PINS, ERRORS);
+Sensors backSensors(SENSORS_COUNT, BACK_SENSOR_PINS, ERRORS);  // MODULE 1B: Back sensors
 Motors motors(
     NORMAL_SPEED, MIN_SPEED, MAX_SPEED,
     LEFT_IN1, LEFT_IN2, LEFT_EN,
     RIGHT_IN1, RIGHT_IN2, RIGHT_EN
 );
 PID pid(KP, KI, KD);
+PID backPid(KP_BACK, KI, KD_BACK);  // MODULE 1B: Separate PID for backward with lower gains
 
-// ============================================== RANGE-BASED F/B ALGORITHM /////////////////
+// ============================================== DIRECTION DECISION /////////////////
 
 struct RangeDecision {
-    bool isForward;     // true = forward, false = backward
-    int targetTable;    // Farthest reachable table in the chosen direction
+    bool isForward;
+    int targetTable;
 };
 
-// Function declarations
 RangeDecision decideDirection();
+RangeDecision decideNextDirection();  // 5F/4B rule for step 4
 
 // ============================================== SETUP /////////////////
 
@@ -341,12 +367,14 @@ void setup() {
     
     Serial.println("\n========================================");
     Serial.println("   testTABLEm3: Testing Module");
+    Serial.println("   (with MODULE 1B back sensors)");
     Serial.println("========================================\n");
     
     // Initialize IR sensors
     pinMode(IR1, INPUT);   // Staff station
     pinMode(IR5, INPUT);   // Table counter
     sensors.initialize();  // Initialize IR2, IR3, IR4 for line following
+    backSensors.initialize();  // MODULE 1B: Initialize back sensors
     
     // Initialize motors
     motors.initialize();
@@ -356,17 +384,17 @@ void setup() {
     Wire.setClock(400000);
     
     Serial.println("🗺️  Restaurant Map:");
-    Serial.println("  Tables: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10");
-    Serial.println("  Staff Station: Start/End point (IR1 only)");
-    Serial.println("  IR5: Counts tables (black squares)\n");
+    Serial.println("  Staff ←→ T1 → T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 ←→ Staff");
+    Serial.println("  RIGHT side (1-5): FORWARD | LEFT side (6-10): BACKWARD\n");
     
-    Serial.println("📋 Navigation Logic (Reachability + Opportunistic):");
-    Serial.println("  1. Check reachable tables from current position:");
-    Serial.println("     FORWARD: +5 tables (current+1 to current+5)");
-    Serial.println("     BACKWARD: +4 tables with wrap (1→10→9...)");
-    Serial.println("  2. Choose direction with MORE reachable tables");
-    Serial.println("  3. Go to farthest reachable, serve opportunistically");
-    Serial.println("  4. IR5 counting: Cumulative (always ++), modulo to get table#\n");
+    Serial.println("📋 Navigation Logic (Directional Grouping + 5F/4B):");
+    Serial.println("  SINGLE ORDER: Tables 1-5 → FORWARD, Tables 6-10 → BACKWARD");
+    Serial.println("  MULTIPLE ORDERS:");
+    Serial.println("    Step 1: Detect multi-order");
+    Serial.println("    Step 2: Count RIGHT(1-5) vs LEFT(6-10), start with MORE (tie=LEFT)");
+    Serial.println("    Step 3: Serve all tables in that range opportunistically");
+    Serial.println("    Step 4: Use 5F/4B rule for remaining tables");
+    Serial.println("    Step 5: Return based on last table (1-5→BWD, 6-10→FWD)\n");
     
     // ============================================
     // 🧪 TEST ORDERS - EDIT HERE TO ADD ORDERS
@@ -376,10 +404,10 @@ void setup() {
     
     // 👇 ADD YOUR TEST ORDERS HERE:
     addOrder(1);
+    //addOrder(2);
     addOrder(3);
-    addOrder(5);
-    // addOrder(5);
-    // addOrder(7);
+    addOrder(9);
+    //addOrder(8);
     // ============================================
     
     Serial.println("\n🚗 Robot ready at Staff Station!");
@@ -399,8 +427,11 @@ void loop() {
     bool ir5 = digitalRead(IR5) == HIGH;
     
     // Detect IR5 edge (black square passing)
-    // Count tables during NAVIGATING and RETURNING states
-    if (ir5 && !lastIR5State && (currentState == NAVIGATING || currentState == RETURNING)) {
+    // ⚠️ ONLY count tables during NAVIGATING (NOT during RETURNING)
+    // During RETURNING, only IR1 matters for detecting staff
+    // ⚠️ Ignore IR5 for 1 second after departing from table
+    bool canDetectIR5 = (millis() - departureTime) > 1000;
+    if (ir5 && !lastIR5State && currentState == NAVIGATING && canDetectIR5) {
         // Rising edge: IR5 just detected black square
         onTableMarkerDetected();
     }
@@ -457,29 +488,28 @@ void startNavigation() {
     currentState = NAVIGATING;
     currentTable = 0;  // Reset at staff station
     servedCount = 0;
+    cumulativeCounter = 0;  // Reset counter
+    initialSideChosen = false;  // Reset for new navigation
     
     // Initialize served status
     for (int i = 0; i < 11; i++) {
         orderServed[i] = false;
     }
     
-    // Decide direction using range algorithm
+    // Decide INITIAL direction - only happens ONCE at staff
     RangeDecision decision = decideDirection();
+    initialSideChosen = true;
+    servingRightSide = decision.isForward;  // Track which side we started with
     
     movingForward = decision.isForward;
     targetTable = decision.targetTable;
     
-    // Initialize cumulative counter based on direction
-    if (!movingForward) {
-        // Backward: m = 10 + currentTable
-        cumulativeCounter = 10 + currentTable;
-    }
-    // Forward: cumulativeCounter already at currentTable from previous movement
-    
     Serial.print("🎯 Target: Table ");
     Serial.println(targetTable);
     Serial.print("📍 Direction: ");
-    Serial.println(movingForward ? "FORWARD (+5 reach)" : "BACKWARD (+4 reach, wrap)");
+    Serial.println(movingForward ? "FORWARD (RIGHT side 1-5)" : "BACKWARD (LEFT side 6-10)");
+    Serial.print("📊 Starting position: Table ");
+    Serial.println(currentTable);
     Serial.println("   ⚡ Will serve ALL tables with orders along the way!");
 }
 
@@ -491,40 +521,62 @@ void onTableMarkerDetected() {
     Serial.print(", Direction: ");
     Serial.println(movingForward ? "FORWARD" : "BACKWARD");
     
-    if (movingForward) {
-        // Forward: simple increment
-        cumulativeCounter++;
-        currentTable = cumulativeCounter;
-        
-        Serial.print("📊 Count: ");
-        Serial.print(cumulativeCounter);
-        Serial.print(" → Table ");
-        Serial.print(currentTable);
-        Serial.println(" (forward)");
-    } else {
-        // Backward: decrement from m (where m=10+x when backward started)
-        cumulativeCounter--;
-        
-        // Convert: 13→T3, 12→T2, 11→T1, 10→T10, 9→T9, etc.
-        if (cumulativeCounter > 10) {
-            currentTable = cumulativeCounter - 10;  // 13→3, 12→2, 11→1
-        } else if (cumulativeCounter == 10) {
-            currentTable = 10;  // T10
-        } else if (cumulativeCounter > 0) {
-            currentTable = cumulativeCounter;  // 9→9, 8→8, ..., 1→1
+    if (currentState == NAVIGATING) {
+        if (movingForward) {
+            // Forward navigation: increment table number with wrap-around
+            currentTable++;
+            if (currentTable > 10) {
+                currentTable = 1;  // Wrap T10 → T1
+            }
+            cumulativeCounter = currentTable;
+            
+            Serial.print("📊 Forward → Table ");
+            Serial.println(currentTable);
         } else {
-            currentTable = 0;  // Reached staff
+            // Backward navigation: decrement table number OR wrap from staff
+            if (currentTable == 0) {
+                // Starting from staff going backward → first marker is T10
+                currentTable = 10;
+            } else if (currentTable > 1) {
+                // Normal backward: T9→T8, T8→T7, etc.
+                currentTable--;
+            } else {
+                // From T1 going backward wraps to T10 (if continuing the loop)
+                currentTable = 10;
+            }
+            cumulativeCounter = currentTable;
+            
+            Serial.print("📊 Backward → Table ");
+            Serial.println(currentTable);
         }
         
-        Serial.print("📊 Count: ");
-        Serial.print(cumulativeCounter);
-        Serial.print(" → Table ");
-        Serial.print(currentTable);
-        Serial.println(" (backward)");
+        // Check if this table has an order (opportunistic serving)
+        checkAndServeTable();
+        
+    } else if (currentState == RETURNING) {
+        if (movingForward) {
+            // Returning forward: T9→T10→Staff
+            if (currentTable >= 10) {
+                currentTable = 0;  // Arrived at staff
+                Serial.println("📊 Return forward → Arrived at Staff!");
+            } else {
+                currentTable++;
+                Serial.print("📊 Return forward → Passing Table ");
+                Serial.println(currentTable);
+            }
+        } else {
+            // Returning backward: T3→T2→T1→Staff
+            if (currentTable <= 1) {
+                currentTable = 0;  // Arrived at staff
+                Serial.println("📊 Return backward → Arrived at Staff!");
+            } else {
+                currentTable--;
+                Serial.print("📊 Return backward → Passing Table ");
+                Serial.println(currentTable);
+            }
+        }
+        cumulativeCounter = currentTable;
     }
-    
-    // Check if this table has an order (opportunistic serving)
-    checkAndServeTable();
 }
 
 void checkAndServeTable() {
@@ -583,77 +635,132 @@ void departFromTable() {
     
     // Check if orderList is empty
     if (orderCount == 0) {
-        // All orders served! Calculate optimal direction to return to staff
+        // ==== STEP 5: Return based on last table position ====
         Serial.println("\n🎉 All orders served!");
         
-        // Calculate steps needed in each direction to reach Staff (position 0)
-        int forwardSteps;
-        int backwardSteps;
-        
-        // FORWARD to staff: currentTable→10, then 10→0 (wrap)
-        // Total: (10 - currentTable) + 1
-        forwardSteps = (10 - currentTable) + 1;
-        
-        // BACKWARD to staff: currentTable→currentTable-1→...→1→0
-        // Total: currentTable
-        backwardSteps = currentTable;
-        
-        Serial.print("   📐 From T");
-        Serial.print(currentTable);
-        Serial.println(" to Staff:");
-        Serial.print("      Forward steps: ");
-        Serial.println(forwardSteps);
-        Serial.print("      Backward steps: ");
-        Serial.println(backwardSteps);
-        
-        // Choose direction with fewer steps
-        if (forwardSteps <= backwardSteps) {
-            movingForward = true;
-            Serial.print("🔙 Returning FORWARD (needs ");
-            Serial.print(forwardSteps);
-            Serial.println(" steps)");
-            // Don't reset cumulative counter - continue from current
-        } else {
+        if (currentTable >= 1 && currentTable <= 5) {
+            // Last table in RIGHT side (1-5) → return BACKWARD to staff
             movingForward = false;
-            Serial.print("🔙 Returning BACKWARD (needs ");
-            Serial.print(backwardSteps);
-            Serial.println(" steps)");
-            // Set cumulative counter for backward movement
-            cumulativeCounter = 10 + currentTable;
+            cumulativeCounter = currentTable;  // Will count down: T3→T2→T1→Staff
+            Serial.print("🔙 Last table T");
+            Serial.print(currentTable);
+            Serial.println(" is RIGHT (1-5) → Returning BACKWARD");
             Serial.print("   Counter set to: ");
             Serial.println(cumulativeCounter);
-            Serial.print("   movingForward flag: ");
-            Serial.println(movingForward ? "TRUE (FORWARD)" : "FALSE (BACKWARD)");
+        } else {
+            // Last table in LEFT side (6-10) → return FORWARD to staff
+            movingForward = true;
+            cumulativeCounter = currentTable;  // Will count up: T9→T10→Staff
+            Serial.print("🔙 Last table T");
+            Serial.print(currentTable);
+            Serial.println(" is LEFT (6-10) → Returning FORWARD");
+            Serial.print("   Counter set to: ");
+            Serial.println(cumulativeCounter);
         }
         
         targetTable = 0;  // Target is staff station
         currentState = RETURNING;
-        Serial.print("   State changed to: RETURNING\n");
-        Serial.print("   Direction: ");
-        Serial.println(movingForward ? "FORWARD" : "BACKWARD");
+        Serial.println("   State: RETURNING");
         return;
     }
     
-    // More orders remaining
-    if (orderCount > 0) {
-        // Recalculate direction for remaining orders
-        RangeDecision decision = decideDirection();
+    // ==== STEP 3 & 4: Continue on current side, or switch to other side ====
+    // Check if there are remaining orders on the CURRENT side
+    int currentSideOrders = 0;
+    int currentSideFarthest = 0;
+    
+    for (int i = 0; i < orderCount; i++) {
+        int table = orderList[i];
+        if (!orderServed[table]) {
+            if (servingRightSide && table >= 1 && table <= 5) {
+                // Still have RIGHT side orders
+                currentSideOrders++;
+                if (table > currentSideFarthest) currentSideFarthest = table;
+            } else if (!servingRightSide && table >= 6 && table <= 10) {
+                // Still have LEFT side orders
+                currentSideOrders++;
+                if (currentSideFarthest == 0 || table < currentSideFarthest) currentSideFarthest = table;
+            }
+        }
+    }
+    
+    if (currentSideOrders > 0) {
+        // ==== STEP 3: Still have orders on current side - continue in same direction ====
+        targetTable = currentSideFarthest;
+        // Keep same direction (movingForward doesn't change)
+        Serial.print("\n🎯 Continue on ");
+        Serial.print(servingRightSide ? "RIGHT" : "LEFT");
+        Serial.print(" side: Target T");
+        Serial.println(targetTable);
+    } else {
+        // ==== STEP 4: Finished current side - switch to OTHER side using 5F/4B ====
+        Serial.print("\n✅ Finished ");
+        Serial.print(servingRightSide ? "RIGHT" : "LEFT");
+        Serial.println(" side! Switching to other side...");
         
-        movingForward = decision.isForward;
+        // Use 5F/4B to find closest table on other side
+        RangeDecision decision = decideNextDirection();
         targetTable = decision.targetTable;
         
-        // Initialize cumulative counter if switching to backward
-        if (!movingForward) {
-            cumulativeCounter = 10 + currentTable;
+        // Update which side we're now serving
+        servingRightSide = !servingRightSide;
+        
+        Serial.print("🔄 Now serving ");
+        Serial.print(servingRightSide ? "RIGHT" : "LEFT");
+        Serial.println(" side");
+        Serial.print("📊 5F/4B chose: ");
+        Serial.print(decision.isForward ? "FORWARD" : "BACKWARD");
+        Serial.print(" to T");
+        Serial.println(targetTable);
+        
+        // *** CRITICAL: Update direction based on 5F/4B decision ***
+        bool wasForward = movingForward;
+        movingForward = decision.isForward;
+        
+        // Handle direction switch
+        if (!movingForward && wasForward) {
+            cumulativeCounter = currentTable;
+            Serial.println("   🔄 Switching direction: FORWARD → BACKWARD");
+            Serial.print("   Counter reset to: ");
+            Serial.println(cumulativeCounter);
+        } else if (movingForward && !wasForward) {
+            cumulativeCounter = currentTable;
+            Serial.println("   🔄 Switching direction: BACKWARD → FORWARD");
+            Serial.print("   Counter reset to: ");
+            Serial.println(cumulativeCounter);
         }
         
-        Serial.print("\n🎯 Next target: Table ");
-        Serial.println(targetTable);
-        Serial.print("   Direction: ");
-        Serial.println(movingForward ? "FORWARD (+5 reach)" : "BACKWARD (+4 reach, wrap)");
-        
+        departureTime = millis();
         currentState = NAVIGATING;
+        return;  // Early return after side switch
     }
+    
+    bool wasForward = movingForward;
+    
+    // Handle direction switch - reset counter based on current position
+    if (!movingForward && wasForward) {
+        // Switching from forward to backward: will count down from currentTable
+        // Counter represents how many markers until staff (going backward)
+        cumulativeCounter = currentTable;
+        Serial.println("   🔄 Switching direction: FORWARD → BACKWARD");
+        Serial.print("   Counter reset to: ");
+        Serial.println(cumulativeCounter);
+    } else if (movingForward && !wasForward) {
+        // Switching from backward to forward: will count up from currentTable
+        cumulativeCounter = currentTable;
+        Serial.println("   🔄 Switching direction: BACKWARD → FORWARD");
+        Serial.print("   Counter reset to: ");
+        Serial.println(cumulativeCounter);
+    }
+    // If no direction change, counter continues as-is
+    
+    Serial.print("\n🎯 Next target: Table ");
+    Serial.println(targetTable);
+    Serial.print("   Direction: ");
+    Serial.println(movingForward ? "FORWARD" : "BACKWARD");
+    
+    departureTime = millis();  // Start 1-second IR5 ignore period
+    currentState = NAVIGATING;
 }
 
 void returnToStaff() {
@@ -696,76 +803,107 @@ void printOrders() {
         if (i < orderCount - 1) Serial.print(", ");
     }
     Serial.println();
-    Serial.println("⚡ Reachability + Opportunistic algorithm!");
+    Serial.println("⚡ Directional Grouping + 5F/4B algorithm!");
 }
 
-// ============================================== RANGE-BASED F/B ALGORITHM (IMPLEMENTATION) /////////////////
+// ============================================== DIRECTION DECISION ALGORITHM /////////////////
 
 RangeDecision decideDirection() {
     unsigned long startMicros = micros();
-    
-    // Check which unserved tables are reachable in each direction
-    // FORWARD: Can reach up to currentTable+5
-    // BACKWARD: Can reach up to 4 tables back (with wrapping)
-    
-    int forwardReachable[10];  // Tables reachable going forward
-    int backwardReachable[10]; // Tables reachable going backward
-    int forwardCount = 0;
-    int backwardCount = 0;
-    int forwardFarthest = -1;
-    int backwardFarthest = -1;
-    
-    // Check FORWARD reachability (currentTable + 1 to currentTable + 5)
-    for (int i = 0; i < orderCount; i++) {
-        int table = orderList[i];
-        if (!orderServed[table]) {
-            // Forward: simple increment
-            if (table > currentTable && table <= currentTable + 5) {
-                forwardReachable[forwardCount++] = table;
-                if (table > forwardFarthest) forwardFarthest = table;
-            }
-        }
-    }
-    
-    // Check BACKWARD reachability (4 steps back with wrapping)
-    for (int i = 0; i < orderCount; i++) {
-        int table = orderList[i];
-        if (!orderServed[table]) {
-            // Calculate backward distance with wrapping
-            int backwardSteps;
-            if (table < currentTable) {
-                backwardSteps = currentTable - table;
-            } else {
-                backwardSteps = currentTable + (10 - table);
-            }
-            
-            if (backwardSteps > 0 && backwardSteps <= 4) {
-                backwardReachable[backwardCount++] = table;
-                // Farthest backward = the one with most backward steps
-                if (backwardFarthest == -1 || backwardSteps > (backwardFarthest < currentTable ? currentTable - backwardFarthest : currentTable + (10 - backwardFarthest))) {
-                    backwardFarthest = table;
-                }
-            }
-        }
-    }
-    
     RangeDecision decision;
     
-    // Choose direction with more reachable tables
-    if (forwardCount > backwardCount) {
+    // Get unserved tables
+    int unservedTables[10];
+    int unservedCount = 0;
+    
+    for (int i = 0; i < orderCount; i++) {
+        if (!orderServed[orderList[i]]) {
+            unservedTables[unservedCount++] = orderList[i];
+        }
+    }
+    
+    if (unservedCount == 0) {
         decision.isForward = true;
-        decision.targetTable = forwardFarthest;
-    } else if (backwardCount > forwardCount) {
-        decision.isForward = false;
-        decision.targetTable = backwardFarthest;
-    } else if (forwardCount > 0) {
-        // Equal: prefer forward
-        decision.isForward = true;
-        decision.targetTable = forwardFarthest;
-    } else {
-        // No reachable tables (shouldn't happen)
-        decision.isForward = true;
-        decision.targetTable = currentTable + 1;
+        decision.targetTable = 0;
+        return decision;
+    }
+    
+    // ==== SINGLE ORDER RULE ====
+    if (unservedCount == 1) {
+        int table = unservedTables[0];
+        if (table >= 1 && table <= 5) {
+            // RIGHT side (1-5) → FORWARD
+            decision.isForward = true;
+            decision.targetTable = table;
+            Serial.println("📍 Single order: Table 1-5 → FORWARD (RIGHT side)");
+        } else {
+            // LEFT side (6-10) → BACKWARD
+            decision.isForward = false;
+            decision.targetTable = table;
+            Serial.println("📍 Single order: Table 6-10 → BACKWARD (LEFT side)");
+        }
+    }
+    // ==== MULTIPLE ORDER RULE ====
+    else {
+        // Step 2: Count RIGHT (1-5) vs LEFT (6-10)
+        int rightCount = 0, leftCount = 0;
+        int rightFarthest = 0, leftFarthest = 11;  // leftFarthest starts at 11 (higher than any table)
+        
+        for (int i = 0; i < unservedCount; i++) {
+            int table = unservedTables[i];
+            if (table >= 1 && table <= 5) {
+                rightCount++;
+                if (table > rightFarthest) rightFarthest = table;  // Highest number in RIGHT range
+            } else if (table >= 6 && table <= 10) {
+                leftCount++;
+                if (table < leftFarthest) leftFarthest = table;  // Lowest number in LEFT range (farthest backward)
+            }
+        }
+        
+        Serial.print("📊 RIGHT (1-5): ");
+        Serial.print(rightCount);
+        Serial.print(" orders, LEFT (6-10): ");
+        Serial.print(leftCount);
+        Serial.println(" orders");
+        
+        // Step 2: Choose side with MORE orders (tie = LEFT)
+        if (rightCount > leftCount) {
+            // RIGHT has MORE → Go FORWARD to FARTHEST right table
+            decision.isForward = true;
+            decision.targetTable = rightFarthest;
+            Serial.print("📍 Multi-order: RIGHT has MORE (");
+            Serial.print(rightCount);
+            Serial.print(" > ");
+            Serial.print(leftCount);
+            Serial.print(") → FORWARD to farthest T");
+            Serial.println(rightFarthest);
+        } else if (leftCount > rightCount) {
+            // LEFT has MORE → Go BACKWARD to FARTHEST left table
+            decision.isForward = false;
+            decision.targetTable = leftFarthest;
+            Serial.print("📍 Multi-order: LEFT has MORE (");
+            Serial.print(leftCount);
+            Serial.print(" > ");
+            Serial.print(rightCount);
+            Serial.print(") → BACKWARD to farthest T");
+            Serial.println(leftFarthest);
+        } else {
+            // EQUAL: Default to LEFT (backward)
+            decision.isForward = false;
+            decision.targetTable = (leftFarthest <= 10) ? leftFarthest : rightFarthest;
+            Serial.print("📍 Multi-order: EQUAL (");
+            Serial.print(rightCount);
+            Serial.print(" = ");
+            Serial.print(leftCount);
+            Serial.print(") → Default LEFT (BACKWARD) to T");
+            Serial.println(decision.targetTable);
+            
+            // Fallback if no left tables
+            if (leftFarthest > 10 && rightFarthest > 0) {
+                decision.isForward = true;
+                decision.targetTable = rightFarthest;
+            }
+        }
     }
     
     unsigned long calcTime = micros() - startMicros;
@@ -776,35 +914,126 @@ RangeDecision decideDirection() {
     return decision;
 }
 
-// ============================================== LINE FOLLOWING /////////////////
+// 5F/4B Rule: For remaining tables after first side
+RangeDecision decideNextDirection() {
+    unsigned long startMicros = micros();
+    RangeDecision decision;
+    
+    // Get unserved tables
+    int unservedTables[10];
+    int unservedCount = 0;
+    
+    for (int i = 0; i < orderCount; i++) {
+        if (!orderServed[orderList[i]]) {
+            unservedTables[unservedCount++] = orderList[i];
+        }
+    }
+    
+    if (unservedCount == 0) {
+        decision.isForward = true;
+        decision.targetTable = 0;
+        return decision;
+    }
+    
+    // Single remaining → use simple rule
+    if (unservedCount == 1) {
+        int table = unservedTables[0];
+        decision.isForward = (table >= 1 && table <= 5);
+        decision.targetTable = table;
+        return decision;
+    }
+    
+    // 5F/4B Rule: Calculate steps to each unserved table
+    int bestForwardTable = -1, bestForwardSteps = 999;
+    int bestBackwardTable = -1, bestBackwardSteps = 999;
+    
+    for (int i = 0; i < unservedCount; i++) {
+        int table = unservedTables[i];
+        
+        // Forward steps (max 5)
+        int forwardSteps;
+        if (table > currentTable) {
+            forwardSteps = table - currentTable;
+        } else {
+            forwardSteps = (10 - currentTable) + table;  // Wrap around
+        }
+        
+        // Backward steps (max 4)
+        int backwardSteps;
+        if (table < currentTable) {
+            backwardSteps = currentTable - table;
+        } else {
+            backwardSteps = currentTable + (10 - table);  // Wrap around
+        }
+        
+        // Check if within reachability
+        if (forwardSteps <= 5 && forwardSteps < bestForwardSteps) {
+            bestForwardSteps = forwardSteps;
+            bestForwardTable = table;
+        }
+        if (backwardSteps <= 4 && backwardSteps < bestBackwardSteps) {
+            bestBackwardSteps = backwardSteps;
+            bestBackwardTable = table;
+        }
+    }
+    
+    Serial.print("📊 5F/4B from T");
+    Serial.print(currentTable);
+    Serial.print(": Fwd→T");
+    Serial.print(bestForwardTable);
+    Serial.print("(");
+    Serial.print(bestForwardSteps);
+    Serial.print(" steps), Bwd→T");
+    Serial.print(bestBackwardTable);
+    Serial.print("(");
+    Serial.print(bestBackwardSteps);
+    Serial.println(" steps)");
+    
+    // Choose direction: prefer shorter path, then backward
+    if (bestBackwardTable != -1 && (bestForwardTable == -1 || bestBackwardSteps <= bestForwardSteps)) {
+        decision.isForward = false;
+        decision.targetTable = bestBackwardTable;
+    } else if (bestForwardTable != -1) {
+        decision.isForward = true;
+        decision.targetTable = bestForwardTable;
+    } else {
+        // Fallback: use simple rule
+        decision.isForward = (unservedTables[0] >= 1 && unservedTables[0] <= 5);
+        decision.targetTable = unservedTables[0];
+    }
+    
+    unsigned long calcTime = micros() - startMicros;
+    Serial.print("⚡ Calculation time: ");
+    Serial.print(calcTime);
+    Serial.println(" μs");
+    
+    return decision;
+}
+
+// ============================================== LINE FOLLOWING (MODULE 1B) /////////////////
 
 void followLine() {
-    // Use MODULE 1's PID-based line following
-    int error = sensors.calculate_error();
-    int speed_difference = pid.calculate_speed_difference(error);
+    int error, speed_difference;
     
-    // Use appropriate motor direction based on movingForward flag
     if (movingForward) {
+        // FORWARD: Use front sensors
+        error = sensors.calculate_error();
+        speed_difference = pid.calculate_speed_difference(error);
         motors.drive(speed_difference, DEBUG);
     } else {
+        // BACKWARD: Use back sensors (MODULE 1B)
+        error = backSensors.calculate_error();
+        speed_difference = backPid.calculate_speed_difference(error);
         motors.drive_backward(speed_difference, DEBUG);
     }
     
     if(DEBUG) {
-        // Print sensor states
-        Serial.print("Sensors [L M R]: [");
-        Serial.print(sensors.on_line(SENSOR_PINS[0]) ? "■" : "□");
-        Serial.print(" ");
-        Serial.print(sensors.on_line(SENSOR_PINS[1]) ? "■" : "□");
-        Serial.print(" ");
-        Serial.print(sensors.on_line(SENSOR_PINS[2]) ? "■" : "□");
-        Serial.println("]");
-        
-        Serial.print("error: ");
-        Serial.println(error);
-        Serial.print("speed_difference: ");
+        Serial.print("Direction: ");
+        Serial.println(movingForward ? "FORWARD (front sensors)" : "BACKWARD (back sensors)");
+        Serial.print("Error: ");
+        Serial.print(error);
+        Serial.print(", Speed diff: ");
         Serial.println(speed_difference);
-        Serial.println("--------------------------------------");
     }
 }
 
