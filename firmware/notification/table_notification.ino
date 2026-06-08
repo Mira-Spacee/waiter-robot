@@ -22,8 +22,8 @@
 
 // ====== CONFIGURATION ======
 // Replace with your WiFi credentials
-const char* ssid = "AVIV";
-const char* password = "$$$$$$$$M";
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
 
 // Optional: GPIO pins for notifications (uncomment if using)
 // const int LED_PIN = 2;        // Built-in LED

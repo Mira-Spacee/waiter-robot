@@ -1,7 +1,7 @@
 #include <WiFi.h>
 
-const char* WIFI_SSID = " AVIV";
-const char* WIFI_PASS = "$$$$$$$$M";
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
 
 void setup() {
   Serial.begin(115200);

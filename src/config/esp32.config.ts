@@ -5,8 +5,8 @@ export const ESP32_CONFIG = {
   // No need to update this when ESP32 restarts or gets new IP
   ipAddress: 'restaurant-esp32.local',  // 🎯 Automatic discovery via mDNS
   
-  // 📝 FALLBACK: If mDNS doesn't work, replace with actual IP like '172.17.49.216'
-  // ipAddress: '172.17.49.216',  // Manual IP (use only if mDNS fails)
+  // 📝 FALLBACK: If mDNS doesn't work, replace with the ESP32's actual LAN IP
+  // ipAddress: '192.168.1.50',  // Manual IP (use only if mDNS fails)
   
   // Port where your ESP32 is listening (default: 80)
   port: 80,

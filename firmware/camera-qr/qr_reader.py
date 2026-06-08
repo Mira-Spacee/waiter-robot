@@ -6,7 +6,7 @@ import urllib.request
 #cap = cv2.VideoCapture(0)
 font = cv2.FONT_HERSHEY_PLAIN
  
-url='http://10.193.242.183/'
+url='http://YOUR_ESP32CAM_IP/'  # e.g. http://192.168.1.50/
 cv2.namedWindow("live transmission", cv2.WINDOW_AUTOSIZE)
  
 prev=""

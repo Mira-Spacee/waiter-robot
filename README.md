@@ -1,543 +1,222 @@
-# 🍽️ Restaurant Ordering System
+<div align="center">
 
-A modern, full-featured restaurant ordering system with real-time multi-device synchronization, ESP32 integration, staff/admin dashboards, and **secure user management**.
+# 🤖 AVIV — Autonomous Waiter Robot
 
----
+**A full-stack, low-cost autonomous waiter robot that delivers food in restaurants for ~1% of the cost of commercial systems.**
 
-## ✨ Features
+[![Hardware Cost](https://img.shields.io/badge/Hardware-~%24287-brightgreen)](docs/HARDWARE.md)
+[![Navigation Success](https://img.shields.io/badge/Navigation%20success-98%25-success)](docs/ALGORITHMS.md)
+[![Platform](https://img.shields.io/badge/MCU-ESP32%20240MHz-blue)](firmware/)
+[![Web](https://img.shields.io/badge/Web-React%20%2B%20TypeScript-61DAFB)](src/)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-- 📱 **Customer Menu** - Browse and order from any device
-- 🔄 **Real-Time Sync** - Orders sync across all devices instantly
-- 📡 **ESP32 Integration** - Table notifications via WiFi-connected ESP32
-- 👨‍🍳 **Staff Dashboard** - Live order tracking and status updates
-- 📊 **Admin Reports** - Analytics, revenue tracking, and data management
-- 🔐 **User Management** - Secure authentication with role-based access (NEW!)
-- 👥 **Multi-User Support** - Add/delete admin and staff accounts (NEW!)
-- 🔒 **Password Security** - SHA-256 hashed passwords (NEW!)
-- 🌐 **Auto IP Detection** - Seamless WiFi/hotspot switching (NEW!)
-- 📦 **Monthly Archive** - Built-in database management
-- 🎨 **Modern UI** - Clean, responsive glassmorphism design
+*B.Sc. Computer Engineering graduation project — Komar University of Science and Technology*
+
+<img src="docs/images/robot-physical.png" alt="AVIV waiter robot — final build" width="42%">&nbsp;&nbsp;<img src="docs/images/robot-cad.png" alt="AVIV waiter robot — CAD render and laser-cut parts" width="42%">
+
+</div>
 
 ---
 
-## 🔐 Default Login Credentials
+## 💡 What is AVIV?
 
-**Admin Account:**
-- Username: `admin`
-- Password: `admin123`
-- Access: Admin Reports + User Management
+AVIV is an **autonomous waiter robot** that carries meals from the kitchen to restaurant tables on its own. Customers order from their phone by scanning a QR code, the kitchen loads the food onto the robot, and AVIV navigates to the table, avoids people and obstacles on the way, serves, and returns to base — no waiter required for the delivery run.
 
-**First Steps:**
-1. Login as admin
-2. Go to "Manage Users"
-3. Create staff accounts
-4. Consider changing admin password for security
+Commercial restaurant robots (BellaBot, BETA-G) cost **$15,000–$40,000** because they rely on LiDAR and SLAM. AVIV reaches the same goal using **line-following with IR markers** on an **$8 ESP32**, bringing the entire build down to **~$287** — a **40–83× cost reduction** that puts restaurant automation within reach of small cafés and developing regions.
 
-📖 **Full Documentation:** See `AUTHENTICATION_GUIDE.md`
+> Built as a complete engineering system: custom hardware, embedded control algorithms, and a real web application — evolved across **four prototype iterations (FV1 → FV4)**.
 
 ---
 
-## 🚀 Quick Start
+## ✨ Highlights
 
-### **Prerequisites**
-- Node.js (v16 or higher)
-- NPM
-- WiFi network
+| | |
+|---|---|
+| 💵 **~$287 total hardware** | vs. $8k–$40k for commercial robots (see the [cost comparison](#-how-aviv-compares)) |
+| 🧠 **Runs on a single ESP32** | 240 MHz, Wi-Fi built in — no PC, no LiDAR, no cloud |
+| 🛤️ **Line-following navigation** | Predictable, transparent paths customers can see and trust |
+| 📦 **30 kg payload, 4 shelves** | CNC laser-cut body serves multiple tables in one trip |
+| 🥤 **Zero spills** | Jerk-limited **S-curve motion** — 0 spills across 50 test deliveries |
+| 🎯 **98% navigation success** | ±6 cm path accuracy, 100% obstacle detection |
+| 📱 **Full web control system** | QR ordering, staff dashboard, admin analytics — real-time, multi-device |
+| 🔁 **Bidirectional, no turns** | Forward/backward line following avoids fragile 180° pivots |
 
-### **Installation**
+---
 
-```powershell
-# 1. Install dependencies
+## 🏗️ System Architecture
+
+AVIV is a three-tier system: customers and staff interact through a web app, a local server holds the source of truth, and the ESP32 brain drives the robot.
+
+```
+        ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+        │  Customer 📱  │   │   Staff 🧑‍🍳   │   │   Admin 📊    │
+        │  (QR menu)   │   │  (dashboard) │   │  (reports)   │
+        └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
+               │                  │                  │
+               └──────────────────┼──────────────────┘
+                                  │  HTTP / REST (local Wi-Fi, mDNS)
+                          ┌───────▼────────┐
+                          │  Node + Express │
+                          │  + SQLite store │   ← orders, users, status
+                          └───────┬────────┘
+                                  │  polls "paid" orders
+                          ┌───────▼────────┐
+                          │   ESP32 (brain) │
+                          │  PID · S-curve  │
+                          │  state machine  │
+                          └───────┬────────┘
+            ┌──────────────┬──────┴───────┬───────────────┐
+        8× IR sensors  6× ultrasonic  4× encoders   2× BTS7960 → 4× DC motors
+       (line + markers) (obstacles)  (closed loop)        (drive)
+```
+
+📖 **Deep dives:** [System & Web Architecture](docs/ARCHITECTURE.md) · [Hardware & BOM](docs/HARDWARE.md) · [Control Algorithms](docs/ALGORITHMS.md) · [Firmware guide](firmware/README.md)
+
+---
+
+## 🧠 How it works
+
+1. **Order** — Each table has a QR code locked to its table number. The customer scans it, browses the menu, and places an order.
+2. **Confirm** — The order appears on the **staff dashboard**. The cashier marks it paid; the kitchen loads the food and presses **"Launch AVIV"**.
+3. **Navigate** — The ESP32 follows a line on the floor, counting **IR markers** to know which table it's passing. A custom **5-step serving algorithm** plans the most efficient multi-table route.
+4. **Serve safely** — **PID control** keeps AVIV centered on the line; an **S-curve motion profile** ramps speed smoothly so drinks never spill. Ultrasonic sensors stop the robot if a person steps in the way.
+5. **Return** — After the last delivery, AVIV drives itself back to the staff station and waits for the next run.
+
+---
+
+## 📊 How AVIV compares
+
+| Criterion | BETA-G (academic) | BellaBot (commercial) | **AVIV** |
+|---|---|---|---|
+| Navigation | SLAM (LiDAR) | SLAM (LiDAR + depth) | **Line-following + markers** |
+| Processing | Intel NUC + ROS | Embedded ARM + Linux | **ESP32 @ 240 MHz** |
+| Sensors | LiDAR, IMU | LiDAR, depth cam, ultrasonic | **8× IR, 6× ultrasonic, 4× encoders** |
+| Payload | Not documented | 15 kg | **30 kg** |
+| Hardware cost | $8,000–$12,000 | $15,000–$25,000 | **$287** |
+| 3-year total cost | ~$10,000 | $30,000–$40,000 | **$287** |
+| Navigation success | 87% | ~95% | **98%** |
+| Setup | Hours (mapping) | 2–3 days | **Minutes** |
+
+*Full analysis and references in [docs/HARDWARE.md](docs/HARDWARE.md).*
+
+---
+
+## 🔩 Hardware at a glance
+
+- **Brain:** ESP32 DevKit V4 (240 MHz, Wi-Fi) + 38-pin expansion shield
+- **Drive:** 4× JGB37-555 12 V high-torque gear motors · 2× BTS7960 (43 A) drivers · 130 mm all-terrain wheels
+- **Sensing:** 8× IR line/marker sensors · 6× HC-SR04 ultrasonic · 4× HC-020K wheel encoders
+- **Power:** 12 V 17 Ah sealed battery
+- **Body:** CNC laser-cut foam board, 60 × 60 cm, ~10 kg, 4 internal shelves, 11" tablet mount, **30 kg capacity**
+- **Interface:** Wall-/robot-mounted tablet running the web app
+
+→ Complete bill of materials, specs, and selection rationale: **[docs/HARDWARE.md](docs/HARDWARE.md)**
+
+---
+
+## 🧮 Control algorithms
+
+| Algorithm | Purpose | Result |
+|---|---|---|
+| **PID line following** | Keep the robot centered on the line (front + back arrays) | ±6 cm tracking |
+| **S-curve motion profile** | Jerk-limited acceleration to protect the payload | 0 spills / 50 deliveries |
+| **Table-serving (5-step)** | Plan multi-table delivery order on a looped track | No zig-zag, shortest path |
+
+The serving planner uses **directional grouping + a 5-forward / 4-backward rule** on a ring-shaped track to minimize travel. → **[docs/ALGORITHMS.md](docs/ALGORITHMS.md)**
+
+---
+
+## 💻 The Web Control System
+
+A modern, real-time ordering app that ties customers, staff, and the robot together over local Wi-Fi.
+
+**Tech stack:** React · TypeScript · Vite · Tailwind CSS · shadcn/ui · Node.js · Express · SQLite
+
+**Roles**
+- 👤 **Customer** — scan QR → browse menu → order (table number locked)
+- 🧑‍🍳 **Staff** — cashier view (manual orders, mark paid) + kitchen view (load robot, launch)
+- 📊 **Admin** — analytics, revenue, most-ordered items, user management, database maintenance
+
+### Getting started
+
+> Requirements: Node.js 16+ and npm. All devices must share one local Wi-Fi network.
+
+```bash
+# 1. Install web app + backend dependencies
 npm install
+cd server && npm install && cd ..
 
-# 2. Install backend dependencies
-cd server
-npm install
-cd ..
-```
-
-### **Running the System**
-
-**Option 1: Automatic (Recommended)**
-```powershell
-.\start-servers.ps1
-```
-
-**Option 2: Manual (Two terminals)**
-
-Terminal 1 - Backend:
-```powershell
-cd server
-npm start
-```
-
-Terminal 2 - Frontend:
-```powershell
+# 2. Start the backend API (port 3001) — creates the SQLite DB on first run
+cd server && npm start
+#    ...and in a second terminal, start the web app (port 8080)
 npm run dev
 ```
 
-### **Access URLs**
+Open `http://<your-computer-ip>:8080` from any device on the network:
 
-Get your computer's IP address:
-```powershell
-ipconfig
-```
-Look for "IPv4 Address" (e.g., `192.168.1.100`)
+| Page | URL |
+|---|---|
+| Customer menu | `http://<ip>:8080` |
+| Staff dashboard | `http://<ip>:8080/staff/login` |
+| Admin panel | `http://<ip>:8080/admin/login` |
 
-**From any device on your WiFi:**
-- Customer Menu: `http://YOUR_IP:8080`
-- Staff Dashboard: `http://YOUR_IP:8080/staff/login`
-- Admin Panel: `http://YOUR_IP:8080/admin/login`
+Default demo admin login: `admin` / `admin123` — **change this before any real deployment.**
 
----
-
-## 📡 Architecture
-
-```
-┌─────────────┐
-│  Customers  │
-│  (Mobile)   │──┐
-└─────────────┘  │
-                 │
-┌─────────────┐  │    ┌──────────────┐    ┌─────────┐
-│   Staff     │  ├────│  Backend API │────│  ESP32  │
-│  (Tablet)   │──┤    │  Port 3001   │    │ Notifier│
-└─────────────┘  │    └──────────────┘    └─────────┘
-                 │           │
-┌─────────────┐  │      ┌────────┐
-│   Admin     │──┘      │ orders │
-│  (Laptop)   │         │  .json │
-└─────────────┘         └────────┘
-```
-
-### **Tech Stack**
-
-**Frontend:**
-- React + TypeScript
-- Vite
-- Tailwind CSS
-- Shadcn/ui Components
-- React Router
-- Recharts (Analytics)
-
-**Backend:**
-- Node.js + Express
-- File-based storage (JSON)
-- CORS enabled
-- RESTful API
-
-**Hardware Integration:**
-- ESP32 WiFi module
-- HTTP POST notifications
+API host/port can be overridden with environment variables — see [`.env.example`](.env.example).
 
 ---
 
-## 🌐 Multi-Device Setup
+## 🛰️ Firmware (ESP32)
 
-### **How It Works**
+All embedded code lives in [`firmware/`](firmware/), organized by function:
 
-1. **Backend Server** (Port 3001) stores all orders in `server/orders.json`
-2. **Frontend App** (Port 8080) polls backend every 3 seconds
-3. **All devices** see updates in real-time (within 3 seconds)
-
-### **Network Configuration**
-
-**Make Website Accessible on WiFi:**
-
-1. **Get Your IP Address:**
-   ```powershell
-   ipconfig
-   ```
-   Note your IPv4 address (e.g., `192.168.1.50`)
-
-2. **Configure API Service:**
-   
-   Edit `src/services/api.service.ts`:
-   ```typescript
-   const host = '192.168.1.50'; // ← Your computer's IP
-   ```
-
-3. **Share URL with Devices:**
-   - Print QR codes for tables
-   - Add to WiFi welcome page
-   - Display on screens
-
-### **Set Static IP (Optional but Recommended)**
-
-To prevent IP from changing on restart:
-
-**Windows:**
-1. Press `Win + R`, type `ncpa.cpl`
-2. Right-click WiFi adapter → Properties
-3. Double-click "Internet Protocol Version 4 (TCP/IPv4)"
-4. Select "Use the following IP address"
-5. Enter your current IP, subnet (255.255.255.0), and gateway
-
-OR use the PowerShell script:
-```powershell
-.\set_static_ip.ps1
 ```
+firmware/
+├── navigation/    Line following (fwd/bwd), table navigation, IMU experiments, Python simulator
+├── camera-qr/     FV1 ESP32-CAM QR experiments
+├── notification/  Web → ESP32 table-notification receiver
+└── prototypes/    Early motor/sensor test sketches
+```
+
+Flash the `.ino` files with the Arduino IDE (set your Wi-Fi SSID/password at the top of each sketch). Full mapping and per-file notes: **[firmware/README.md](firmware/README.md)**
 
 ---
 
-## 📡 ESP32 Integration
+## 🧪 Prototype evolution (FV1 → FV4)
 
-### **Setup**
+This robot wasn't built in one shot — it took four iterations, each fixing the last one's failures:
 
-1. **Configure ESP32 IP**
-   
-   Edit `src/config/esp32.config.ts`:
-   ```typescript
-   export const ESP32_CONFIG = {
-     ipAddress: '192.168.1.100', // ← Your ESP32's IP
-     port: 80,
-     endpoint: '/order',
-     timeout: 5000,
-   };
-   ```
+| Version | Big idea | Why it changed |
+|---|---|---|
+| **FV1** | ESP32-CAM scans QR codes at each table | Camera too slow to keep up with the robot ❌ |
+| **FV2** | IR marker counting + PID + S-curve | Reliable line following, but weak prototype motors |
+| **FV3** | IMU-based emergency escape maneuvers | Motor EMI wrecked the gyroscope ❌ |
+| **FV4** | Linear-only nav, encoders, high-torque drive | **Production-ready: 98% success** ✅ |
 
-2. **Upload ESP32 Code**
-   
-   - Open `esp32_restaurant_notification.ino` in Arduino IDE
-   - Update WiFi credentials (lines 23-24)
-   - Upload to ESP32
-   - Note the IP address from Serial Monitor
-   - Update `esp32.config.ts` with ESP32's IP
-
-3. **Test Connection**
-   
-   Place a test order and check ESP32 Serial Monitor for table number.
-
-### **ESP32 Features**
-
-- Receives table number via HTTP POST
-- JSON format: `{"tableNumber": 5, "timestamp": "..."}`
-- Can trigger LED, buzzer, display, etc.
-- Example Arduino code included
-
-For detailed ESP32 setup, see [`ESP32_SETUP.md`](ESP32_SETUP.md)
+The full story — including every problem, root cause, and lesson — is in [docs/ALGORITHMS.md](docs/ALGORITHMS.md#prototype-evolution).
 
 ---
 
-## 👥 User Roles
+## 🚀 Future work
 
-### **Customer**
-- Browse menu (meals & drinks)
-- Add items to basket
-- Select table number
-- Place order
-
-### **Staff**
-- View all tables
-- See active orders
-- Mark orders as "Sent" or "Paid"
-- Real-time updates
-
-### **Admin**
-- View analytics and reports
-- Track revenue and popular items
-- Archive old orders
-- Clear database
-- Export data
+- Swap the sealed lead-acid battery for **lithium** (longer life, lighter)
+- Add **LiDAR** for 360° detection and richer path planning
+- Tighter obstacle-recovery behavior for busier floors
 
 ---
 
-## 📊 Admin Features
+## 👥 Authors
 
-### **Analytics Dashboard**
+Graduation project, **Department of Computer Engineering, Komar University of Science and Technology**.
 
-- Total orders
-- Total earnings
-- Most popular items
-- Order distribution charts
-- Filter by period (daily/weekly/monthly)
+- **Hozan Aso Ibrahim**
+- **Mirko Awat Mahmood**
+- **Yad Azad Nassrat**
 
-### **Database Management**
-
-**Archive Old Orders:**
-1. Login to admin panel
-2. Click "Archive Old Orders"
-3. Orders older than 1 month → Moved to backup file
-4. Recent orders remain for fast performance
-
-**Clear All Orders:**
-1. Click "Clear All" button
-2. Confirm twice (safety)
-3. All orders → Backed up to file
-4. Database reset to empty
-
-**Backup Files Location:**
-```
-server/
-  ├── orders.json (active orders)
-  ├── orders_archive_YYYY-MM-DD.json (archived)
-  └── orders_backup_YYYY-MM-DD.json (full backup)
-```
-
-For detailed instructions, see [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md)
-
----
-
-## 🗂️ Project Structure
-
-```
-diner-dashboard-direct-main/
-├── server/                    # Backend API
-│   ├── index.js              # Express server
-│   ├── orders.json           # Order database
-│   └── package.json          # Backend dependencies
-│
-├── src/
-│   ├── components/
-│   │   ├── ui/               # Shadcn components (14 files)
-│   │   ├── BasketSidebar.tsx # Shopping cart
-│   │   ├── MenuItemCard.tsx  # Menu item display
-│   │   └── TableCard.tsx     # Table status card
-│   │
-│   ├── config/
-│   │   └── esp32.config.ts   # ESP32 settings
-│   │
-│   ├── contexts/
-│   │   └── OrderContext.tsx  # Global state management
-│   │
-│   ├── pages/
-│   │   ├── Index.tsx         # Customer menu
-│   │   ├── StaffLogin.tsx    # Staff authentication
-│   │   ├── StaffDashboard.tsx# Staff order view
-│   │   ├── AdminLogin.tsx    # Admin authentication
-│   │   ├── AdminReports.tsx  # Admin analytics
-│   │   └── NotFound.tsx      # 404 page
-│   │
-│   ├── services/
-│   │   ├── api.service.ts    # Backend API calls
-│   │   ├── archive.service.ts# Archive/clear orders
-│   │   └── esp32.service.ts  # ESP32 notifications
-│   │
-│   ├── data/
-│   │   └── menuItems.ts      # Menu configuration
-│   │
-│   └── assets/               # Food images
-│
-├── public/
-│   └── favicon.ico
-│
-├── esp32_restaurant_notification.ino  # ESP32 code
-├── start-servers.ps1         # Startup script
-├── set_static_ip.ps1         # Network config script
-├── README.md                 # This file
-├── ESP32_SETUP.md            # ESP32 guide
-└── ARCHIVE_GUIDE.md          # Archive feature guide
-```
-
----
-
-## 🎨 Customization
-
-### **Update Menu Items**
-
-Edit `src/data/menuItems.ts`:
-
-```typescript
-export const menuItems = [
-  {
-    id: '1',
-    name: 'Burger',
-    price: 12.99,
-    image: '/src/assets/burger.jpg',
-    category: 'meals'
-  },
-  // Add more items...
-];
-```
-
-### **Change Table Count**
-
-Edit `src/components/BasketSidebar.tsx` (line ~110):
-
-```typescript
-{[1, 2, 3, 4, 5].map(num => ( // ← Change array for more tables
-```
-
-And `src/pages/StaffDashboard.tsx` (line ~48):
-
-```typescript
-{[1, 2, 3, 4, 5].map(tableNum => { // ← Change array
-```
-
-### **Modify Styling**
-
-- Colors: `tailwind.config.ts`
-- Global styles: `src/index.css`
-- Component styles: Inline Tailwind classes
-
----
-
-## 🔧 Configuration
-
-### **Ports**
-
-- **Frontend:** 8080 (configurable in `vite.config.ts`)
-- **Backend:** 3001 (configurable in `server/index.js`)
-- **ESP32:** 80 (standard HTTP)
-
-### **Polling Interval**
-
-Change real-time update speed in `src/contexts/OrderContext.tsx`:
-
-```typescript
-}, 3000); // ← Milliseconds (3000 = 3 seconds)
-```
-
-### **Archive Age**
-
-Change how old orders must be to archive in `src/pages/AdminReports.tsx`:
-
-```typescript
-const result = await archiveOldOrders(1); // ← Months
-```
-
----
-
-## 🐛 Troubleshooting
-
-### **Orders Not Syncing Between Devices**
-
-✅ Check both servers are running (ports 3001 & 8080)
-✅ Verify all devices on same WiFi
-✅ Check API service has correct IP address
-✅ Check browser console for errors (F12)
-
-### **ESP32 Not Receiving Notifications**
-
-✅ ESP32 IP correct in `src/config/esp32.config.ts`
-✅ ESP32 server running (check Serial Monitor)
-✅ ESP32 on same WiFi as computer
-✅ Test ESP32 endpoint: `http://ESP32_IP/ping`
-
-### **Can't Access from Phone**
-
-✅ Phone on same WiFi network
-✅ Using `http://YOUR_IP:8080` not `localhost`
-✅ Firewall allowing connections on port 8080
-✅ Servers are running
-
-### **Port Already in Use**
-
-```powershell
-# Kill process on port 8080
-Get-NetTCPConnection -LocalPort 8080 | Select-Object -ExpandProperty OwningProcess | Stop-Process -Force
-
-# Kill process on port 3001
-Get-NetTCPConnection -LocalPort 3001 | Select-Object -ExpandProperty OwningProcess | Stop-Process -Force
-```
-
-### **Old Orders Not Archiving**
-
-✅ Backend server running
-✅ Check `server/` folder permissions
-✅ Look for backup files in `server/` directory
-
----
-
-## 🔒 Security
-
-### **Network Security**
-
-- ✅ Local WiFi only (not public internet)
-- ✅ No external access without port forwarding
-- ✅ Router firewall protects by default
-
-### **Access Control**
-
-- Staff/Admin require login (sessionStorage)
-- Customers have direct menu access
-- No user data stored (session-based auth)
-
-### **Data Privacy**
-
-- All data stored locally on your computer
-- No cloud services or external APIs
-- Orders saved in plain JSON (easy to manage)
-
----
-
-## 📦 Backup & Maintenance
-
-### **Manual Backup**
-
-```powershell
-# Backup orders
-Copy-Item server\orders.json server\orders_backup.json
-
-# Backup entire project
-Copy-Item -Path . -Destination ..\diner-backup -Recurse
-```
-
-### **Monthly Maintenance**
-
-1. Login to admin dashboard
-2. Click "Archive Old Orders"
-3. Check `server/` for archive files
-4. Optional: Move old archives to external storage
-
-### **Restore from Backup**
-
-```powershell
-# Restore orders
-Copy-Item server\orders_backup_2025-10-09.json server\orders.json
-
-# Restart backend
-cd server
-npm start
-```
-
----
-
-## 🚀 Deployment
-
-### **Production Recommendations**
-
-For production use:
-
-1. **Database:** Consider SQLite or PostgreSQL for high volume
-2. **Authentication:** Add proper user management
-3. **HTTPS:** Use SSL certificates
-4. **Monitoring:** Add logging and error tracking
-5. **Backups:** Automated daily backups
-
-Current setup is perfect for:
-- Small to medium restaurants
-- < 1000 orders/month
-- Local WiFi operation
-- Single location
+*Academic advisor: Asst. Prof. Dr. Shwan Abdullah · Chairperson: Dr. Susan Al Naqshbandi · Submitted December 2025.*
 
 ---
 
 ## 📄 License
 
-This project is open source and available for personal and commercial use.
-
----
-
-## 🆘 Support
-
-For issues or questions:
-
-1. Check documentation files
-2. Review error messages in console
-3. Verify network configuration
-4. Test with minimal setup
-
----
-
-## 📚 Additional Documentation
-
-- **ESP32 Setup:** [`ESP32_SETUP.md`](ESP32_SETUP.md) - Hardware integration guide
-- **Archive Guide:** [`ARCHIVE_GUIDE.md`](ARCHIVE_GUIDE.md) - Database management
-- **Arduino Code:** `esp32_restaurant_notification.ino` - ESP32 firmware
-
----
-
-**Built with ❤️ for efficient restaurant operations**
-
-🍔 Happy ordering! 🥤
+Released under the [MIT License](LICENSE) — free to use, study, and build on. If AVIV helps your project, a star ⭐ or a citation is appreciated.
