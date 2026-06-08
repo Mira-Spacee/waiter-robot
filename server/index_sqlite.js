@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const crypto = require('crypto');
 const db = require('./database');
+const { hashPassword } = require('./passwordUtils');
 
 const app = express();
 const PORT = 3001;
@@ -9,11 +9,6 @@ const PORT = 3001;
 // Enable CORS for all devices on local network
 app.use(cors());
 app.use(express.json());
-
-// Password hashing function
-function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
-}
 
 // ============================================
 // ORDER API ROUTES (Using SQLite)

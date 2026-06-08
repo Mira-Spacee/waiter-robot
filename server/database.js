@@ -1,5 +1,6 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const { hashPassword } = require('./passwordUtils');
 
 // Create/open database
 const dbPath = path.join(__dirname, 'restaurant.db');
@@ -65,11 +66,13 @@ const seedDefaultUsers = () => {
   
   if (userCount.count === 0) {
     const insertUser = db.prepare('INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)');
-    
-    // Default users (same as before)
-    insertUser.run('staff1', 'staff', 'staff123', 'staff');
-    insertUser.run('admin1', 'admin', 'admin123', 'admin');
-    
+
+    // Default demo users. Credentials stay staff/staff123 and admin/admin123,
+    // but the password column is stored hashed (same scheme the login route
+    // hashes incoming passwords with), never plaintext.
+    insertUser.run('staff1', 'staff', hashPassword('staff123'), 'staff');
+    insertUser.run('admin1', 'admin', hashPassword('admin123'), 'admin');
+
     console.log('✅ Default users created!');
   }
 };
